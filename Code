@@ -1,0 +1,81 @@
+import os
+import streamlit as st
+from langchain_ollama import OllamaLLM, OllamaEmbeddings  # Updated import
+from langchain_chroma import Chroma  # Updated import
+from langchain_community.document_loaders import DirectoryLoader
+from langchain_text_splitters import CharacterTextSplitter
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+
+# Load LLM
+model_local = OllamaLLM(model="llama2")  # Updated initialization
+embedding = OllamaEmbeddings(model="nomic-embed-text")  # Updated initialization
+
+# Define vectorstore path
+vectorstore_path = "chroma_vectorstore"
+
+# Load or create vector store
+if not os.path.exists(vectorstore_path):
+    st.write("Building vectorstore...")
+    raw_documents = DirectoryLoader('localdocs', glob='**/*.txt').load()
+    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+    documents = text_splitter.split_documents(raw_documents)
+
+    vectorstore = Chroma.from_documents(
+        documents=documents,
+        collection_name="rag-chroma",
+        embedding=embedding,
+        persist_directory=vectorstore_path
+    )
+    vectorstore.persist()
+else:
+    vectorstore = Chroma(
+        collection_name="rag-chroma",
+        persist_directory=vectorstore_path,
+        embedding_function=embedding
+    )
+
+retriever = vectorstore.as_retriever()
+
+# RAG Prompt Template
+after_rag_template = """Answer the question based only on the following context:
+{context}
+Question: {question}
+"""
+after_rag_prompt = ChatPromptTemplate.from_template(after_rag_template)
+
+# Build RAG Chain
+after_rag_chain = (
+    {"context": retriever, "question": RunnablePassthrough()}
+    | after_rag_prompt
+    | model_local
+    | StrOutputParser()
+)
+
+# Streamlit UI
+st.title("📄 Document Query with Ollama + ChromaDB")
+st.write("Ask a question based on the uploaded leave documents.")
+
+question = st.text_input("Enter your question")
+
+if st.button("Query Documents"):
+    if question.strip() == "":
+        st.warning("Please enter a question.")
+    else:
+        with st.spinner("Fetching answer..."):
+            try:
+                answer = after_rag_chain.invoke(question)
+                st.text_area("Answer", value=answer, height=300, disabled=True)
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+
+# Optional sample questions
+with st.expander("💡 Sample Questions to Try"):
+    st.markdown("""
+- What is the maximum allotted number of Casual Leaves per year?
+- What is the maximum number of Academic Leaves one can take?
+- For how many days one can take sick leave?
+- If one takes a Casual Leave between two holidays, will it be counted as three leaves?
+- What’s Hospital Leave?
+""")
